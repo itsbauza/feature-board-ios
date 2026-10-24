@@ -8,18 +8,38 @@ public struct FeatureBoardView: View {
     private let url: URL
     private let allowLocalhostHTTP: Bool
     private let tokenProvider: @MainActor () async throws -> String
+    private let support: (label: LocalizedStringKey, action: () -> Void)?
     @State private var isLoading = true
     @State private var failed = false
+    /// Why the last session request failed; the board stays readable, since reading is public.
+    @State private var signInFailure: (any Error)?
     @State private var retryID = UUID()
 
+    /// - Parameter contactSupport: Offered whenever something fails, so people can still reach you:
+    ///   on the failure screen when the board can't open, and on the notice when they can read but
+    ///   not post (no subscription, sign-in unavailable).
     public init(
         url: URL,
         allowLocalhostHTTP: Bool = false,
+        contactSupport: (label: LocalizedStringKey, action: () -> Void)? = nil,
         tokenProvider: @escaping @MainActor () async throws -> String
     ) {
         self.url = url
         self.allowLocalhostHTTP = allowLocalhostHTTP
+        self.support = contactSupport
         self.tokenProvider = tokenProvider
+    }
+
+    /// For apps without a backend: members sign in with their App Store subscription, which the
+    /// board verifies with Apple. Turn on "App Store subscriptions" in the board's dashboard first.
+    /// - Parameter productIDs: Only these subscriptions are offered to the board; nil offers any.
+    public init(
+        url: URL,
+        appStoreProductIDs productIDs: Set<String>? = nil,
+        contactSupport: (label: LocalizedStringKey, action: () -> Void)? = nil
+    ) {
+        let sessions = AppStoreSessions(board: url, productIDs: productIDs)
+        self.init(url: url, contactSupport: contactSupport) { try await sessions.token() }
     }
 
     public var body: some View {
@@ -29,9 +49,13 @@ public struct FeatureBoardView: View {
                 allowLocalhostHTTP: allowLocalhostHTTP,
                 tokenProvider: tokenProvider,
                 onLoading: { isLoading = $0 },
-                onFailure: { failed = true; isLoading = false }
+                onFailure: { failed = true; isLoading = false },
+                onSignIn: { signInFailure = $0 }
             )
             .id(retryID)
+            .safeAreaInset(edge: .bottom) {
+                if let signInFailure, !failed { signInNotice(for: signInFailure) }
+            }
 
             if isLoading && !failed {
                 ProgressView("Loading feedback…")
@@ -45,17 +69,57 @@ public struct FeatureBoardView: View {
                     Text("Check your connection and account access, then try again.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
-                    Button("Try again") {
-                        failed = false
-                        isLoading = true
-                        retryID = UUID()
-                    }
-                    .buttonStyle(.borderedProminent)
+                    Button("Try again", action: retry)
+                        .buttonStyle(.borderedProminent)
+                    supportButton
                 }
                 .padding(32)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(uiColor: .systemBackground))
             }
+        }
+    }
+
+    private func retry() {
+        failed = false
+        signInFailure = nil
+        isLoading = true
+        retryID = UUID()
+    }
+
+    @ViewBuilder private var supportButton: some View {
+        if let support {
+            Button(support.label, action: support.action)
+                .accessibilityIdentifier("featureBoard.contactSupport")
+        }
+    }
+
+    private func signInNotice(for error: any Error) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(Self.signInMessage(for: error))
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 20) {
+                Button("Try again", action: retry)
+                supportButton
+            }
+            .font(.subheadline.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("featureBoard.signInNotice")
+    }
+
+    private static func signInMessage(for error: any Error) -> LocalizedStringKey {
+        switch error as? AppStoreSessions.Failure {
+        case .noSubscription, .rejected(status: 403):
+            "You can read requests. Posting and voting are for members with an active subscription."
+        default:
+            "You can read requests, but posting and voting aren't available right now."
         }
     }
 }
@@ -67,6 +131,8 @@ private struct BoardWebView: UIViewRepresentable {
     let tokenProvider: @MainActor () async throws -> String
     let onLoading: (Bool) -> Void
     let onFailure: () -> Void
+    /// nil once a session was handed to the board, otherwise why none could be fetched.
+    let onSignIn: ((any Error)?) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -174,12 +240,13 @@ private struct BoardWebView: UIViewRepresentable {
                         arguments: ["token": token], in: nil, in: .page
                     ) { [weak self] result in
                         guard let self, generation == currentGeneration else { return }
-                        if case .failure = result { parent.onFailure() }
+                        if case .failure = result { parent.onFailure() } else { parent.onSignIn(nil) }
                     }
                 } catch is CancellationError {
                     // A dismissed/reloaded board must not receive a stale account token.
                 } catch {
-                    if generation == currentGeneration { parent.onFailure() }
+                    // Reading is public, so the board stays; only posting needs the session.
+                    if generation == currentGeneration { parent.onSignIn(error) }
                 }
             }
         }
