@@ -42,6 +42,30 @@ FeatureBoardView(url: boardURL, contactSupport: support) {
 
 The provider runs when the board first needs a session and whenever it asks for a fresh one.
 
+## Match your app's look
+
+Pass an appearance and the board uses your colors (asset-catalog colors resolve for light and dark), corner radius and font before it draws:
+
+```swift
+FeatureBoardView(
+    url: boardURL,
+    appStoreProductIDs: nil,
+    appearance: FeatureBoardAppearance(
+        background: .clear, // show your own background behind the board
+        surface: Color("Card"), field: Color("Field"),
+        text: .primary, secondaryText: .secondary, separator: Color("Line"),
+        accent: .blue, onAccent: .white, accentEdge: Color("BlueEdge"),
+        cornerRadius: 16, roundedFont: true
+    ),
+    contactSupport: support,
+    onCanGoBackChange: { boardCanGoBack = $0 }
+)
+.background { MyBackground() }
+.navigationBarBackButtonHidden(boardCanGoBack)
+```
+
+`onCanGoBackChange` reports when the board shows a request or the new-request form, which have their own back button; hiding yours meanwhile keeps a single back button on screen.
+
 ## Notes
 
 - Present it inside your own navigation or sheet; keep the normal safe area and keyboard layout.

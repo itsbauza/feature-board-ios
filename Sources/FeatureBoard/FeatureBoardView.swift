@@ -9,6 +9,8 @@ public struct FeatureBoardView: View {
     private let allowLocalhostHTTP: Bool
     private let tokenProvider: @MainActor () async throws -> String
     private let support: (label: LocalizedStringKey, action: () -> Void)?
+    private let appearance: FeatureBoardAppearance?
+    private let onCanGoBackChange: ((Bool) -> Void)?
     @State private var isLoading = true
     @State private var failed = false
     /// Why the last session request failed; the board stays readable, since reading is public.
@@ -21,11 +23,15 @@ public struct FeatureBoardView: View {
     public init(
         url: URL,
         allowLocalhostHTTP: Bool = false,
+        appearance: FeatureBoardAppearance? = nil,
         contactSupport: (label: LocalizedStringKey, action: () -> Void)? = nil,
+        onCanGoBackChange: ((Bool) -> Void)? = nil,
         tokenProvider: @escaping @MainActor () async throws -> String
     ) {
         self.url = url
         self.allowLocalhostHTTP = allowLocalhostHTTP
+        self.appearance = appearance
+        self.onCanGoBackChange = onCanGoBackChange
         self.support = contactSupport
         self.tokenProvider = tokenProvider
     }
@@ -36,10 +42,16 @@ public struct FeatureBoardView: View {
     public init(
         url: URL,
         appStoreProductIDs productIDs: Set<String>? = nil,
-        contactSupport: (label: LocalizedStringKey, action: () -> Void)? = nil
+        allowLocalhostHTTP: Bool = false,
+        appearance: FeatureBoardAppearance? = nil,
+        contactSupport: (label: LocalizedStringKey, action: () -> Void)? = nil,
+        onCanGoBackChange: ((Bool) -> Void)? = nil
     ) {
         let sessions = AppStoreSessions(board: url, productIDs: productIDs)
-        self.init(url: url, contactSupport: contactSupport) { try await sessions.token() }
+        self.init(url: url, allowLocalhostHTTP: allowLocalhostHTTP, appearance: appearance, contactSupport: contactSupport,
+                  onCanGoBackChange: onCanGoBackChange) {
+            try await sessions.token()
+        }
     }
 
     public var body: some View {
@@ -47,12 +59,16 @@ public struct FeatureBoardView: View {
             BoardWebView(
                 url: url,
                 allowLocalhostHTTP: allowLocalhostHTTP,
+                appearanceJSON: appearance?.json(),
                 tokenProvider: tokenProvider,
                 onLoading: { isLoading = $0 },
                 onFailure: { failed = true; isLoading = false },
+                onCanGoBack: { onCanGoBackChange?($0) },
                 onSignIn: { signInFailure = $0 }
             )
             .id(retryID)
+            // A page that couldn't load shows nothing useful behind the failure screen.
+            .opacity(failed ? 0 : 1)
             .safeAreaInset(edge: .bottom) {
                 if let signInFailure, !failed { signInNotice(for: signInFailure) }
             }
@@ -75,7 +91,7 @@ public struct FeatureBoardView: View {
                 }
                 .padding(32)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(uiColor: .systemBackground))
+                .background(appearance?.background ?? Color(uiColor: .systemBackground))
             }
         }
     }
@@ -128,9 +144,13 @@ public struct FeatureBoardView: View {
 private struct BoardWebView: UIViewRepresentable {
     let url: URL
     let allowLocalhostHTTP: Bool
+    /// The app's colors, read by the page before it draws; nil keeps the board's own theme.
+    let appearanceJSON: String?
     let tokenProvider: @MainActor () async throws -> String
     let onLoading: (Bool) -> Void
     let onFailure: () -> Void
+    /// Whether the board shows a page of its own to go back from (a request, the new-request form).
+    let onCanGoBack: (Bool) -> Void
     /// nil once a session was handed to the board, otherwise why none could be fetched.
     let onSignIn: ((any Error)?) -> Void
 
@@ -142,14 +162,27 @@ private struct BoardWebView: UIViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.userContentController.add(context.coordinator, name: "featureBoard")
+        if let appearanceJSON {
+            // JSON of hex strings, numbers and booleans is a valid script literal; the page validates it again.
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: "window.FeatureBoardAppearance = \(appearanceJSON);",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsLinkPreview = false
         webView.isOpaque = false
-        webView.backgroundColor = .systemBackground
-        webView.scrollView.backgroundColor = .systemBackground
+        // With an appearance the page paints its own background (or none), so the app shows through.
+        let background: UIColor = appearanceJSON == nil ? .systemBackground : .clear
+        webView.backgroundColor = background
+        webView.scrollView.backgroundColor = background
         webView.scrollView.keyboardDismissMode = .interactive
         context.coordinator.webView = webView
+        // The board's own back button handles its pages; hosts hide theirs meanwhile, so there is one.
+        context.coordinator.backObservation = webView.observe(\.canGoBack, options: [.initial, .new]) { [weak coordinator = context.coordinator] view, _ in
+            let canGoBack = view.canGoBack
+            Task { @MainActor in coordinator?.parent.onCanGoBack(canGoBack) }
+        }
         if context.coordinator.isConfiguredURLSafe {
             webView.load(URLRequest(url: url))
         } else {
@@ -174,6 +207,7 @@ private struct BoardWebView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        coordinator.backObservation = nil
         coordinator.invalidate()
         uiView.stopLoading()
         uiView.navigationDelegate = nil
@@ -185,6 +219,7 @@ private struct BoardWebView: UIViewRepresentable {
         var parent: BoardWebView
         var loadedURL: URL
         weak var webView: WKWebView?
+        var backObservation: NSKeyValueObservation?
         private var tokenTask: Task<Void, Never>?
         private var generation = UUID()
 
