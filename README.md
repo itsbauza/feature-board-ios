@@ -39,7 +39,9 @@ When someone deletes their account in your app, remove what they did on the boar
 try? await AppStoreSessions(board: boardURL, productIDs: nil).deleteMyContent()
 ```
 
-It signs in with their active subscription; without one it throws `noSubscription`.
+Or keep their feedback, with nothing that ties it to them: `anonymizeMyContent()` moves their requests, comments and votes to a new identity with no name and removes their blocks.
+
+Both sign in with their active subscription; without one they throw `noSubscription`.
 
 ## Apps with their own backend
 

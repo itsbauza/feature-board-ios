@@ -52,8 +52,21 @@ public struct AppStoreSessions: Sendable {
     /// example when they delete their account in your app. Throws `noSubscription` when there is
     /// no active subscription to sign in with: the board then holds nothing it can tie to them here.
     public func deleteMyContent() async throws {
-        guard let mine else { throw Failure.invalidBoardURL }
-        var request = URLRequest(url: mine)
+        try await leave(query: nil)
+    }
+
+    /// Keeps this subscriber's requests, comments and votes on the board but moves them to a new
+    /// identity with no name, so nothing ties them to the person or their subscription any more.
+    /// Their blocks are removed. Use it instead of `deleteMyContent()` when your app's account
+    /// deletion should keep feedback. Throws like `deleteMyContent()`.
+    public func anonymizeMyContent() async throws {
+        try await leave(query: URLQueryItem(name: "keep", value: "posts"))
+    }
+
+    private func leave(query: URLQueryItem?) async throws {
+        guard var url = mine else { throw Failure.invalidBoardURL }
+        if let query { url.append(queryItems: [query]) }
+        var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
         request.cachePolicy = .reloadIgnoringLocalCacheData
