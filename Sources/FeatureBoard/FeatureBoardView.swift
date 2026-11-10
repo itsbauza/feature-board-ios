@@ -61,6 +61,7 @@ public struct FeatureBoardView: View {
                 allowLocalhostHTTP: allowLocalhostHTTP,
                 appearanceJSON: appearance?.json(),
                 tokenProvider: tokenProvider,
+                onContactSupport: support?.action,
                 onLoading: { isLoading = $0 },
                 onFailure: { failed = true; isLoading = false },
                 onCanGoBack: { onCanGoBackChange?($0) },
@@ -147,6 +148,8 @@ private struct BoardWebView: UIViewRepresentable {
     /// The app's colors, read by the page before it draws; nil keeps the board's own theme.
     let appearanceJSON: String?
     let tokenProvider: @MainActor () async throws -> String
+    /// The board's "Contact us" link, shown only when the app passes `contactSupport`.
+    let onContactSupport: (() -> Void)?
     let onLoading: (Bool) -> Void
     let onFailure: () -> Void
     /// Whether the board shows a page of its own to go back from (a request, the new-request form).
@@ -166,6 +169,11 @@ private struct BoardWebView: UIViewRepresentable {
             // JSON of hex strings, numbers and booleans is a valid script literal; the page validates it again.
             configuration.userContentController.addUserScript(WKUserScript(
                 source: "window.FeatureBoardAppearance = \(appearanceJSON);",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+        if onContactSupport != nil {
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: "window.FeatureBoardHostCapabilities = { contactSupport: true };",
                 injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -255,8 +263,9 @@ private struct BoardWebView: UIViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "featureBoard", message.frameInfo.isMainFrame,
                   matchesOrigin(message.frameInfo.request.url), matchesOrigin(webView?.url),
-                  let body = message.body as? [String: Any], body["type"] as? String == "tokenRequired",
-                  tokenTask == nil else { return }
+                  let body = message.body as? [String: Any] else { return }
+            if body["type"] as? String == "contactSupport" { parent.onContactSupport?(); return }
+            guard body["type"] as? String == "tokenRequired", tokenTask == nil else { return }
             let currentGeneration = generation
             tokenTask = Task { @MainActor [weak self] in
                 guard let self else { return }

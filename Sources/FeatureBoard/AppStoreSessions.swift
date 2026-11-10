@@ -13,6 +13,8 @@ public struct AppStoreSessions: Sendable {
     }
 
     private let endpoint: URL?
+    /// `/api/v1/boards/<id>/me`: everything this subscriber wrote, voted, reported or blocked.
+    private let mine: URL?
     private let productIDs: Set<String>?
 
     /// - Parameter board: The board URL, `https://<host>/board/<id>`.
@@ -24,8 +26,11 @@ public struct AppStoreSessions: Sendable {
             components.query = nil
             components.fragment = nil
             endpoint = components.url
+            components.path = "/api/v1/boards/\(parts[2])/me"
+            mine = components.url
         } else {
             endpoint = nil
+            mine = nil
         }
     }
 
@@ -41,6 +46,20 @@ public struct AppStoreSessions: Sendable {
         guard let status = (response as? HTTPURLResponse)?.statusCode else { throw URLError(.badServerResponse) }
         guard status == 200 else { throw Failure.rejected(status: status) }
         return try JSONDecoder().decode(Session.self, from: data).token
+    }
+
+    /// Removes everything this subscriber wrote, voted, reported or blocked on the board, for
+    /// example when they delete their account in your app. Throws `noSubscription` when there is
+    /// no active subscription to sign in with: the board then holds nothing it can tie to them here.
+    public func deleteMyContent() async throws {
+        guard let mine else { throw Failure.invalidBoardURL }
+        var request = URLRequest(url: mine)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(try await token())", forHTTPHeaderField: "Authorization")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (_, response) = try await URLSession.shared.data(for: request, delegate: NoRedirects())
+        guard let status = (response as? HTTPURLResponse)?.statusCode else { throw URLError(.badServerResponse) }
+        guard status == 204 else { throw Failure.rejected(status: status) }
     }
 
     /// The latest-expiring active, unrevoked auto-renewable subscription StoreKit has verified.

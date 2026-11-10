@@ -29,6 +29,18 @@ FeatureBoardView(
 
 Anyone can read the board. Without an active subscription, or when a session can't be had, the board stays readable and a notice explains that posting is for members, with **Try again** and your `contactSupport` action. If the board itself can't load (offline), a full screen offers the same two actions.
 
+## App Store guideline 1.2
+
+Apple asks apps that show what users write to filter it, let people report and block, act on reports within 24 hours, have people agree to zero-tolerance terms, and give a way to reach you. The board handles the first four (keep **Review before publishing** on in the board's settings). Pass `contactSupport` and the board shows **Contact us** at its foot, which runs your action.
+
+When someone deletes their account in your app, remove what they did on the board too:
+
+```swift
+try? await AppStoreSessions(board: boardURL, productIDs: nil).deleteMyContent()
+```
+
+It signs in with their active subscription; without one it throws `noSubscription`.
+
 ## Apps with their own backend
 
 Your backend authenticates the user, checks their entitlement and exchanges the board's server API key for a session (`POST /api/v1/boards/<id>/sessions`). Never ship that key in the app; pass a provider that calls your backend instead:
